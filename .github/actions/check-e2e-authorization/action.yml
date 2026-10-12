@@ -19,11 +19,11 @@ inputs:
     required: false
     default: ""
   pr_author_association:
-    description: github.event.pull_request.author_association (frozen event payload)
+    description: Deprecated (unused) — authorization uses collaborator permissions
     required: false
     default: ""
   pr_author_login:
-    description: github.event.pull_request.user.login (for collaborator permission API fallback)
+    description: github.event.pull_request.user.login (for collaborator permission API check)
     required: false
     default: ""
   label_actor_login:

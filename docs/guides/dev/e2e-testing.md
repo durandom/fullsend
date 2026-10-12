@@ -718,8 +718,8 @@ gate. Re-run the workflow or add/re-apply `ok-to-test` as appropriate.
    authors authorized immediately)
 2. **`ok-to-test` label** — the thin **E2E ok-to-test** workflow calls the same
    suite via `workflow_call` (fork / external path)
-3. **Gate** — authorize the PR author or a fresh `ok-to-test` label (base
-   checkout only; never checks out PR head)
+3. **Gate** — authorize a write+ / trusted-bot author, or an `ok-to-test`
+   labeled event from a write+ sender (base checkout only; never checks out PR head)
 4. **Behaviour / playback** — checkout PR head SHA, authenticate to GCP via
    WIF, mint cross-org tokens per pool org, `make behaviour-test` (or
    `make playback-test` for the playback job)

@@ -34,10 +34,10 @@ set_role() {
 set_role "labeler" "write"
 
 write_pr() {
-  local assoc="$1"
-  local labels_json="$2"
+  local assoc="${1:-NONE}"
+  local labels_json="${2:-[]}"
   local updated_at="${3:-2026-06-01T10:00:00Z}"
-  local author_login="${4:-}"
+  local author_login="${4-author}"
   if [[ -n "${author_login}" ]]; then
     jq -n --arg assoc "${assoc}" --argjson labels "${labels_json}" --arg updated_at "${updated_at}" --arg login "${author_login}" \
       '{author_association: $assoc, labels: $labels, updated_at: $updated_at, user: {login: $login}}' >"${PR_JSON}"
@@ -232,22 +232,25 @@ write_pr "NONE" '[]'
 run_case "untrusted author without label" "false" "unauthorized" "false"
 
 export EVENT_ACTION="labeled"
+export LABEL_ACTOR_LOGIN="labeler"
 write_pr "NONE" '[{"name":"ok-to-test"}]'
 write_events '[{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z"}]'
 run_case "labeled ok-to-test verifies labeler permission" "true" "ok_to_test" "false"
-if grep -q '/issues/42/events' "${GH_LOG}"; then
-  echo "PASS: labeled path checks events API"
-else
-  echo "FAIL: labeled path should check events API"
-  FAILURES=$((FAILURES + 1))
-fi
+
+# Missing LABEL_ACTOR_LOGIN on labeled event fails closed and does not fall back to events
+unset LABEL_ACTOR_LOGIN
+run_case "labeled ok-to-test without sender login is denied" "false" "untrusted_labeler" "true"
+export LABEL_ACTOR_LOGIN="labeler"
 
 # Triage-role users can apply labels but must not authorize a run.
 set_role "triager" "triage"
+export LABEL_ACTOR_LOGIN="triager"
 write_events '[{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z","actor":{"login":"triager"}}]'
 run_case "ok-to-test labeler without write permission denied" "false" "untrusted_labeler" "true"
 
 # The latest ok-to-test labeler decides, not an earlier one.
+export EVENT_ACTION="labeled"
+export LABEL_ACTOR_LOGIN="triager"
 write_events '[
   {"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T09:00:00Z"},
   {"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z","actor":{"login":"triager"}}
@@ -255,12 +258,15 @@ write_events '[
 run_case "latest ok-to-test labeler without write permission denied" "false" "untrusted_labeler" "true"
 
 # Other labels applied later by anyone do not change who applied ok-to-test.
+export LABEL_ACTOR_LOGIN="labeler"
 write_events '[
   {"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z"},
   {"event":"labeled","label":{"name":"component/cli"},"created_at":"2026-06-01T11:30:00Z","actor":{"login":"triager"}}
 ]'
 run_case "later non-ok-to-test label by another user is ignored" "true" "ok_to_test" "false"
+unset LABEL_ACTOR_LOGIN
 
+export EVENT_ACTION="labeled"
 write_events '[{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z","actor":null}]'
 run_case "ok-to-test label event without actor denied" "false" "untrusted_labeler" "true"
 
@@ -344,30 +350,29 @@ export GH_FAIL="true"
 run_case "gh api failure on pull fetch returns error reason" "false" "error" "false"
 export GH_FAIL="false"
 
-# --- Collaborator permission API fallback tests ---
+# --- Collaborator permission API tests ---
 
-# Private org member: event payload says CONTRIBUTOR, but collaborator API says write+
+# Contributor with collaborator API write+ permissions
 unset EVENT_ACTION PR_UPDATED_AT
-export PR_AUTHOR_ASSOCIATION="CONTRIBUTOR"
 export PR_AUTHOR_LOGIN="maruiz93"
 echo "admin" >"${COLLAB_ROLE}"
 write_pr "NONE" '[]'
 : >"${GH_LOG}"
-run_case "private org member: collaborator API fallback authorizes admin" "true" "trusted_author" "false"
+run_case "collaborator API check authorizes admin" "true" "trusted_author" "false"
 if ! grep -q '/collaborators/' "${GH_LOG}"; then
   echo "FAIL: should have called collaborator permission API"
   FAILURES=$((FAILURES + 1))
 else
-  echo "PASS: called collaborator permission API for fallback"
+  echo "PASS: called collaborator permission API"
 fi
 
 echo "write" >"${COLLAB_ROLE}"
 : >"${GH_LOG}"
-run_case "private org member: collaborator API fallback authorizes write" "true" "trusted_author" "false"
+run_case "collaborator API check authorizes write" "true" "trusted_author" "false"
 
 echo "maintain" >"${COLLAB_ROLE}"
 : >"${GH_LOG}"
-run_case "private org member: collaborator API fallback authorizes maintain" "true" "trusted_author" "false"
+run_case "collaborator API check authorizes maintain" "true" "trusted_author" "false"
 
 # Collaborator API says read — should NOT authorize
 echo "read" >"${COLLAB_ROLE}"
@@ -375,29 +380,12 @@ write_pr "NONE" '[]'
 : >"${GH_LOG}"
 run_case "collaborator API read permission denied" "false" "unauthorized" "false"
 
-# Collaborator API fails for the PR author. That is not write access, and a
-# reopened run still must not treat the label as approval.
-echo "" >"${COLLAB_ROLE}"
-export EVENT_ACTION="reopened"
-export PR_UPDATED_AT="2026-06-01T10:00:00Z"
-write_pr "NONE" '[{"name":"ok-to-test"}]'
-write_events '[{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z"}]'
-: >"${GH_LOG}"
-run_case "author permission API failure does not approve a reopened run" "false" "fresh_ok_to_test" "false"
-
-# No PR_AUTHOR_LOGIN set — should skip collaborator API entirely
+# Missing author login in both env and PR payload fails closed
 unset PR_AUTHOR_LOGIN EVENT_ACTION PR_UPDATED_AT
-export PR_AUTHOR_ASSOCIATION="CONTRIBUTOR"
 echo "admin" >"${COLLAB_ROLE}"
-write_pr "NONE" '[]'
+write_pr "NONE" '[]' "2026-06-01T10:00:00Z" ""
 : >"${GH_LOG}"
-run_case "no PR_AUTHOR_LOGIN skips collaborator API fallback" "false" "unauthorized" "false"
-if grep -q '/collaborators/' "${GH_LOG}"; then
-  echo "FAIL: should NOT have called collaborator API without PR_AUTHOR_LOGIN"
-  FAILURES=$((FAILURES + 1))
-else
-  echo "PASS: skipped collaborator API without PR_AUTHOR_LOGIN"
-fi
+run_case "missing author identity fails closed with error" "false" "error" "false"
 
 # Collaborator API fails for the PR author — returns error, does not silently deny or clear labels
 export PR_AUTHOR_LOGIN="author"

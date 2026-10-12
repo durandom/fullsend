@@ -62,18 +62,17 @@ is_trusted_bot() {
 # Check actor has write+ permission via the collaborator permission API.
 # Base trust strictly on write+ permissions (admin, maintain, write), never
 # on author_association which can include triage/read members.
-# API errors (network, 500, rate limits) route to the ERR trap rather than
-# silently denying or deleting labels.
+# API errors (network, 500, rate limits, malformed JSON) return 1 to trigger
+# error handling rather than silently denying or deleting labels.
 get_collaborator_role() {
   local username="${1:-}"
-  local api_err perm_json role
   if [[ -z "${username}" ]]; then
-    echo "none"
-    return 0
+    return 1
   fi
+  local api_err perm_json role
   api_err="$(mktemp)"
   if ! perm_json="$(gh api "repos/${REPOSITORY}/collaborators/${username}/permission" 2>"${api_err}")"; then
-    if grep -qiE "not a collaborator|404|not found" "${api_err}"; then
+    if grep -qE "HTTP 404|not a collaborator" "${api_err}"; then
       rm -f "${api_err}"
       echo "none"
       return 0
@@ -83,8 +82,11 @@ get_collaborator_role() {
     return 1
   fi
   rm -f "${api_err}"
-  role="$(jq -r '.role_name // "none"' <<<"${perm_json}")"
-  echo "${role}"
+  role="$(jq -er '.role_name // .permission // empty' <<<"${perm_json}")" || return 1
+  case "${role}" in
+    admin|maintain|write|triage|read|none) echo "${role}" ;;
+    *) echo "unknown" ;;
+  esac
 }
 
 is_write_role() {
@@ -102,6 +104,18 @@ remove_ok_to_test_label() {
   label_removed=true
 }
 
+# Look up the latest user who applied ok-to-test from issue event history.
+# Used on non-labeled events (e.g. reopened) or to check if a label was re-applied.
+latest_labeler() {
+  if [[ -z "${events_json:-}" ]]; then
+    events_json="$(gh api "repos/${REPOSITORY}/issues/${PR_NUMBER}/events" --paginate | jq -s 'add // []')" || return 1
+  fi
+  jq -r --arg label "${OK_TO_TEST_LABEL}" '
+    [.[] | select(.event == "labeled" and (.label.name // "") == $label)]
+    | max_by(.created_at // "") | .actor.login // empty
+  ' <<<"${events_json}"
+}
+
 label_removed=false
 authorized=false
 reason="unauthorized"
@@ -109,7 +123,13 @@ reason="unauthorized"
 # Ensure PR_AUTHOR_LOGIN is populated if not provided via environment.
 if [[ -z "${PR_AUTHOR_LOGIN:-}" ]]; then
   pr_json="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
-  PR_AUTHOR_LOGIN="$(jq -r '.user.login // ""' <<<"${pr_json}")"
+  PR_AUTHOR_LOGIN="$(jq -r '.user.login // empty' <<<"${pr_json}")"
+fi
+
+# Fail closed if author identity is missing
+if [[ -z "${PR_AUTHOR_LOGIN:-}" ]]; then
+  write_error_output
+  exit 0
 fi
 
 if is_trusted_bot "${PR_AUTHOR_LOGIN:-}"; then
@@ -157,28 +177,13 @@ else
   fi
 fi
 
-# A label is an authorization boundary: the user who last applied ok-to-test
-# must currently have write+ permission. Triage-role users can apply labels
-# without it, so the label alone does not prove a maintainer approved the run.
-latest_labeler() {
-  if [[ -z "${events_json:-}" ]]; then
-    events_json="$(gh api "repos/${REPOSITORY}/issues/${PR_NUMBER}/events" --paginate | jq -s 'add // []')" || return 1
-  fi
-  jq -r --arg label "${OK_TO_TEST_LABEL}" '
-    [.[] | select(.event == "labeled" and (.label.name // "") == $label)]
-    | max_by(.created_at // "") | .actor.login // empty
-  ' <<<"${events_json}"
-}
-
 if [[ "${reason}" == "ok_to_test" ]]; then
   # On labeled events the frozen payload names the labeler of this run. A
-  # later re-label by someone else must not authorize this run's head.
-  frozen_labeler=""
+  # labeled event MUST have a sender; it must never fall back to live issue events
+  # which could pick up a later label applied by another user.
   if [[ "${EVENT_ACTION:-}" == "labeled" ]]; then
-    frozen_labeler="${LABEL_ACTOR_LOGIN:-}"
-  fi
-  labeler_login="${frozen_labeler}"
-  if [[ -z "${labeler_login}" ]]; then
+    labeler_login="${LABEL_ACTOR_LOGIN:-}"
+  else
     labeler_login="$(latest_labeler)"
   fi
 
@@ -198,7 +203,7 @@ if [[ "${reason}" == "ok_to_test" ]]; then
     if ! is_write_role "${labeler_role}"; then
       authorized=false
       reason="untrusted_labeler"
-      if [[ -z "${frozen_labeler}" || "$(latest_labeler)" == "${frozen_labeler}" ]]; then
+      if [[ "${EVENT_ACTION:-}" != "labeled" || -z "${LABEL_ACTOR_LOGIN:-}" || "$(latest_labeler)" == "${LABEL_ACTOR_LOGIN:-}" ]]; then
         remove_ok_to_test_label
       fi
     fi
