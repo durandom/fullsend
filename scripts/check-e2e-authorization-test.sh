@@ -399,6 +399,14 @@ else
   echo "PASS: skipped collaborator API without PR_AUTHOR_LOGIN"
 fi
 
+# Collaborator API fails for the PR author — returns error, does not silently deny or clear labels
+export PR_AUTHOR_LOGIN="author"
+export GH_FAIL="permission"
+write_pr "NONE" '[{"name":"ok-to-test"}]'
+run_case "author permission lookup API failure returns error" "false" "error" "false"
+export GH_FAIL="false"
+unset PR_AUTHOR_LOGIN
+
 # Clean up
 unset PR_AUTHOR_ASSOCIATION PR_AUTHOR_LOGIN
 echo "" >"${COLLAB_ROLE}"

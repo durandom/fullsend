@@ -102,7 +102,7 @@ runs:
         "
             ;;
           *)
-            body+="E2E tests run automatically for org/repo **members and collaborators** on pull requests.
+            body+="E2E tests run automatically for pull requests authored by users with **write access or higher**.
 
         For other contributors, a maintainer with write access must add the \`ok-to-test\` label **after** the latest push.
         "

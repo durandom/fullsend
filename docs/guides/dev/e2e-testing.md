@@ -668,19 +668,16 @@ use repository secrets. Because that exposes credentials to untrusted code, a
 
 ### Who runs automatically
 
-E2E tests run without maintainer action when the PR author is an org/repo
-**member** or **collaborator** (`author_association` of `OWNER`, `MEMBER`, or
-`COLLABORATOR` on the base repo). The gate uses the frozen
-`github.event.pull_request.author_association` from the workflow event — not a
-live REST lookup — because `GITHUB_TOKEN` lacks `read:org` and cannot see org
-membership for members with private visibility. (Note: agent dispatch paths use
-the collaborator permission API instead, which does not have this limitation —
-see [ADR 0054](../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md).)
+E2E tests run without maintainer action when the PR author has **write
+access or higher** (`write`, `maintain`, or `admin` on the base repo) or is an
+allowed trusted bot. The gate verifies this using the collaborator permission
+API rather than `author_association`, ensuring contributors with read or
+triage roles cannot trigger credentialed CI runs automatically.
 
 ### Who needs `ok-to-test`
 
-External contributors and fork PR authors must have a maintainer with write
-access apply the **`ok-to-test`** label **after** the latest push. A label from
+Contributors without write access must have a maintainer with write access
+apply the **`ok-to-test`** label **after** the latest push. A label from
 anyone else (for example a triage-role user) is removed and does not authorize
 the run. The label must be created once in GitHub repo settings (Settings →
 Labels).

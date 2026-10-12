@@ -62,15 +62,29 @@ is_trusted_bot() {
 # Check actor has write+ permission via the collaborator permission API.
 # Base trust strictly on write+ permissions (admin, maintain, write), never
 # on author_association which can include triage/read members.
-has_write_permission() {
+# API errors (network, 500, rate limits) route to the ERR trap rather than
+# silently denying or deleting labels.
+get_collaborator_role() {
   local username="${1:-}"
+  local api_err perm_json role
   if [[ -z "${username}" ]]; then
+    echo "none"
+    return 0
+  fi
+  api_err="$(mktemp)"
+  if ! perm_json="$(gh api "repos/${REPOSITORY}/collaborators/${username}/permission" 2>"${api_err}")"; then
+    if grep -qiE "not a collaborator|404|not found" "${api_err}"; then
+      rm -f "${api_err}"
+      echo "none"
+      return 0
+    fi
+    cat "${api_err}" >&2
+    rm -f "${api_err}"
     return 1
   fi
-  local perm_json role
-  perm_json=$(gh api "repos/${REPOSITORY}/collaborators/${username}/permission" 2>/dev/null) || return 1
-  role=$(jq -r '.role_name' <<<"${perm_json}") || return 1
-  is_write_role "${role}"
+  rm -f "${api_err}"
+  role="$(jq -r '.role_name // "none"' <<<"${perm_json}")"
+  echo "${role}"
 }
 
 is_write_role() {
@@ -101,37 +115,43 @@ fi
 if is_trusted_bot "${PR_AUTHOR_LOGIN:-}"; then
   authorized=true
   reason="trusted_bot"
-elif [[ -n "${PR_AUTHOR_LOGIN:-}" ]] && has_write_permission "${PR_AUTHOR_LOGIN}"; then
-  authorized=true
-  reason="trusted_author"
 else
-  pr_json="${pr_json:-$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")}"
-  has_ok_label="$(jq -r --arg label "${OK_TO_TEST_LABEL}" '[.labels[].name] | index($label) != null' <<<"${pr_json}")"
+  if ! author_role="$(get_collaborator_role "${PR_AUTHOR_LOGIN:-}")"; then
+    write_error_output
+    exit 0
+  fi
+  if is_write_role "${author_role}"; then
+    authorized=true
+    reason="trusted_author"
+  else
+    pr_json="${pr_json:-$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")}"
+    has_ok_label="$(jq -r --arg label "${OK_TO_TEST_LABEL}" '[.labels[].name] | index($label) != null' <<<"${pr_json}")"
 
-  if [[ "${has_ok_label}" == "true" ]]; then
-    if [[ "${EVENT_ACTION:-}" == "labeled" ]]; then
-      authorized=true
-      reason="ok_to_test"
-    else
-      # Only the labeled event approves a run. An older label is stale.
-      # A label applied after this event belongs to the labeled workflow.
-      events_json="$(gh api "repos/${REPOSITORY}/issues/${PR_NUMBER}/events" --paginate | jq -s 'add // []')"
-      ok_to_test_at="$(jq -r --arg label "${OK_TO_TEST_LABEL}" '
-        [.[] | select(.event == "labeled" and (.label.name // "") == $label) | .created_at] | max // empty
-      ' <<<"${events_json}")"
-
-      last_push_at="${PR_UPDATED_AT:-}"
-      if [[ -z "${last_push_at}" ]]; then
-        # Fallback: live updated_at is noisy (bumped by comments, labels, etc.)
-        # and may over-reject. Prefer the frozen event-payload value (PR_UPDATED_AT).
-        last_push_at="$(jq -r '.updated_at // empty' <<<"${pr_json}")"
-      fi
-
-      if [[ -n "${ok_to_test_at}" && -n "${last_push_at}" && "${ok_to_test_at}" > "${last_push_at}" ]]; then
-        reason="fresh_ok_to_test"
+    if [[ "${has_ok_label}" == "true" ]]; then
+      if [[ "${EVENT_ACTION:-}" == "labeled" ]]; then
+        authorized=true
+        reason="ok_to_test"
       else
-        remove_ok_to_test_label
-        reason="stale_ok_to_test"
+        # Only the labeled event approves a run. An older label is stale.
+        # A label applied after this event belongs to the labeled workflow.
+        events_json="$(gh api "repos/${REPOSITORY}/issues/${PR_NUMBER}/events" --paginate | jq -s 'add // []')"
+        ok_to_test_at="$(jq -r --arg label "${OK_TO_TEST_LABEL}" '
+          [.[] | select(.event == "labeled" and (.label.name // "") == $label) | .created_at] | max // empty
+        ' <<<"${events_json}")"
+
+        last_push_at="${PR_UPDATED_AT:-}"
+        if [[ -z "${last_push_at}" ]]; then
+          # Fallback: live updated_at is noisy (bumped by comments, labels, etc.)
+          # and may over-reject. Prefer the frozen event-payload value (PR_UPDATED_AT).
+          last_push_at="$(jq -r '.updated_at // empty' <<<"${pr_json}")"
+        fi
+
+        if [[ -n "${ok_to_test_at}" && -n "${last_push_at}" && "${ok_to_test_at}" > "${last_push_at}" ]]; then
+          reason="fresh_ok_to_test"
+        else
+          remove_ok_to_test_label
+          reason="stale_ok_to_test"
+        fi
       fi
     fi
   fi
@@ -168,9 +188,10 @@ if [[ "${reason}" == "ok_to_test" ]]; then
     reason="untrusted_labeler"
     remove_ok_to_test_label
   else
-    # The API answers 200 for any user or bot, so a failed lookup is an API
-    # error (reason=error via the ERR trap), not a denial.
-    labeler_role="$(gh api "repos/${REPOSITORY}/collaborators/${labeler_login}/permission" | jq -r '.role_name // ""')"
+    if ! labeler_role="$(get_collaborator_role "${labeler_login}")"; then
+      write_error_output
+      exit 0
+    fi
 
     # Remove the label so a maintainer's re-apply fires a new labeled event.
     # Keep it when someone else has re-applied it since: that run decides.
