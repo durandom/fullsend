@@ -1,6 +1,6 @@
 name: Check E2E Authorization
 description: >-
-  Authorize PR-triggered e2e runs for trusted authors or a fresh ok-to-test label.
+  Authorize PR-triggered e2e runs for trusted authors or an ok-to-test labeled event.
   Removes stale ok-to-test labels and posts a sticky PR comment when unauthorized.
 
 inputs:
@@ -63,8 +63,10 @@ runs:
         LABEL_ACTOR_LOGIN: ${{ inputs.label_actor_login }}
       run: bash "${GITHUB_WORKSPACE}/scripts/check-e2e-authorization.sh" "${PR_NUMBER}" "${REPOSITORY}"
 
+    # fresh_ok_to_test: a newer label belongs to the labeled workflow.
+    # Stay quiet so this run does not overwrite that run's comment.
     - name: Post gate comment
-      if: steps.check.outputs.authorized != 'true'
+      if: steps.check.outputs.authorized != 'true' && steps.check.outputs.reason != 'fresh_ok_to_test'
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}

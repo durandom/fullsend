@@ -188,30 +188,34 @@ run_case "author with write permission ignores stale ok-to-test label" "true" "t
 echo "" >"${ROLES_DIR}/author"
 unset PR_AUTHOR_LOGIN
 
-# --- ok-to-test and synchronize tests ---
+# --- ok-to-test lifecycle ---
+# Only a labeled event approves. A label that postdates this event stays for
+# that workflow; an older label is removed.
 
-# Commit B pushed (synchronize) with existing ok-to-test -> denied until re-approved
 export EVENT_ACTION="synchronize"
 export PR_UPDATED_AT="2026-06-01T10:00:00Z"
 write_pr "NONE" '[{"name":"ok-to-test"}]'
 write_events '[{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z"}]'
-run_case "synchronize with existing ok-to-test invalidates approval" "false" "stale_ok_to_test" "true"
+run_case "synchronize keeps a label applied after the push" "false" "fresh_ok_to_test" "false"
+
+export PR_UPDATED_AT="2026-06-01T12:00:00Z"
+write_events '[{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z"}]'
+run_case "synchronize removes ok-to-test applied before the push" "false" "stale_ok_to_test" "true"
 unset EVENT_ACTION PR_UPDATED_AT
 
-# Reopened PR with fresh ok-to-test label after push is authorized
 export EVENT_ACTION="reopened"
 export PR_UPDATED_AT="2026-06-01T10:00:00Z"
 write_pr "NONE" '[{"name":"ok-to-test"}]'
 write_events '[{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z"}]'
-run_case "fresh ok-to-test label after push on reopened PR" "true" "ok_to_test" "false"
+run_case "reopened run does not approve a newer ok-to-test label" "false" "fresh_ok_to_test" "false"
 
 export PR_UPDATED_AT="2026-06-01T12:00:00Z"
 write_events '[{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z"}]'
-run_case "stale ok-to-test label after newer push" "false" "stale_ok_to_test" "true"
+run_case "reopened run removes an older ok-to-test label" "false" "stale_ok_to_test" "true"
 
 export PR_UPDATED_AT="2026-06-01T12:00:00Z"
 write_events '[{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T12:00:00Z"}]'
-run_case "ok-to-test label at push time is stale" "false" "stale_ok_to_test" "true"
+run_case "ok-to-test label at event time is stale" "false" "stale_ok_to_test" "true"
 
 unset CHECK_E2E_AUTH_DRY_RUN
 run_case "stale ok-to-test removes label" "false" "stale_ok_to_test" "true"
@@ -282,11 +286,11 @@ else
   echo "PASS: frozen sender path skips events API"
 fi
 
-# The sender of a non-labeled event (e.g. the reopener) is not the labeler.
+# A write sender on reopen is not an approval, even when the label is newer.
 export EVENT_ACTION="reopened"
 export PR_UPDATED_AT="2026-06-01T10:00:00Z"
 write_events '[{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z","actor":{"login":"triager"}}]'
-run_case "sender ignored outside labeled events" "false" "untrusted_labeler" "true"
+run_case "reopened run does not treat sender as approval" "false" "fresh_ok_to_test" "false"
 unset LABEL_ACTOR_LOGIN PR_UPDATED_AT
 export EVENT_ACTION="labeled"
 
@@ -314,7 +318,7 @@ export EVENT_ACTION="reopened"
 unset PR_UPDATED_AT
 write_pr "NONE" '[{"name":"ok-to-test"}]' "2026-06-01T10:00:00Z"
 write_events '[{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z"}]'
-run_case "falls back to pull updated_at when PR_UPDATED_AT unset" "true" "ok_to_test" "false"
+run_case "falls back to pull updated_at when PR_UPDATED_AT unset" "false" "fresh_ok_to_test" "false"
 
 export PR_AUTHOR_LOGIN="author"
 set_role "author" "write"
@@ -371,15 +375,15 @@ write_pr "NONE" '[]'
 : >"${GH_LOG}"
 run_case "collaborator API read permission denied" "false" "unauthorized" "false"
 
-# Collaborator API fails for the PR author — falls through to the ok-to-test
-# path, where the labeler's own permission is checked.
+# Collaborator API fails for the PR author. That is not write access, and a
+# reopened run still must not treat the label as approval.
 echo "" >"${COLLAB_ROLE}"
 export EVENT_ACTION="reopened"
 export PR_UPDATED_AT="2026-06-01T10:00:00Z"
 write_pr "NONE" '[{"name":"ok-to-test"}]'
 write_events '[{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z"}]'
 : >"${GH_LOG}"
-run_case "collaborator API failure falls through to ok-to-test" "true" "ok_to_test" "false"
+run_case "author permission API failure does not approve a reopened run" "false" "fresh_ok_to_test" "false"
 
 # No PR_AUTHOR_LOGIN set — should skip collaborator API entirely
 unset PR_AUTHOR_LOGIN EVENT_ACTION PR_UPDATED_AT

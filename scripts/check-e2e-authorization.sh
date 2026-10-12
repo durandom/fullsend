@@ -3,16 +3,18 @@
 #
 # Authorized when the PR author is a trusted bot (e.g. renovate-fullsend[bot]),
 # when the collaborator permission API confirms write+ access (admin, maintain,
-# write), or when a fresh ok-to-test label was applied by a user with write+
-# access after the latest push.
+# write), or when this run is an ok-to-test labeled event from a user with
+# write+ access.
 #
 # Do not base trust on author_association: GitHub reports MEMBER or COLLABORATOR
 # for users with read or triage roles, which must not run credentialed CI.
 # Trust is based strictly on the collaborator permission API (write, maintain, admin).
 #
-# Freshness uses PR updated_at from the frozen workflow event (PR_UPDATED_AT).
-# On ok-to-test labeled events, freshness is not checked. Does not use
-# committer.date (author-controlled).
+# A retained ok-to-test label does not approve opened, synchronize, reopened,
+# or any other event. On those events a label that does not postdate the
+# frozen PR updated_at (PR_UPDATED_AT) is removed. A label applied after that
+# timestamp is left for the labeled workflow and does not authorize this run
+# (reason=fresh_ok_to_test). Does not use committer.date (author-controlled).
 #
 # Usage: check-e2e-authorization.sh PR_NUMBER OWNER/REPO
 #
@@ -107,14 +109,12 @@ else
   has_ok_label="$(jq -r --arg label "${OK_TO_TEST_LABEL}" '[.labels[].name] | index($label) != null' <<<"${pr_json}")"
 
   if [[ "${has_ok_label}" == "true" ]]; then
-    if [[ "${EVENT_ACTION:-}" == "synchronize" ]]; then
-      # New commits invalidate previous approvals until re-approved.
-      remove_ok_to_test_label
-      reason="stale_ok_to_test"
-    elif [[ "${EVENT_ACTION:-}" == "labeled" ]]; then
+    if [[ "${EVENT_ACTION:-}" == "labeled" ]]; then
       authorized=true
       reason="ok_to_test"
     else
+      # Only the labeled event approves a run. An older label is stale.
+      # A label applied after this event belongs to the labeled workflow.
       events_json="$(gh api "repos/${REPOSITORY}/issues/${PR_NUMBER}/events" --paginate | jq -s 'add // []')"
       ok_to_test_at="$(jq -r --arg label "${OK_TO_TEST_LABEL}" '
         [.[] | select(.event == "labeled" and (.label.name // "") == $label) | .created_at] | max // empty
@@ -128,8 +128,7 @@ else
       fi
 
       if [[ -n "${ok_to_test_at}" && -n "${last_push_at}" && "${ok_to_test_at}" > "${last_push_at}" ]]; then
-        authorized=true
-        reason="ok_to_test"
+        reason="fresh_ok_to_test"
       else
         remove_ok_to_test_label
         reason="stale_ok_to_test"
