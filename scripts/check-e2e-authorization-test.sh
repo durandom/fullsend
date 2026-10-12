@@ -73,6 +73,15 @@ if [[ "\${GH_FAIL}" == "permission" && "\$*" == *"/collaborators/"* ]]; then
   echo "simulated permission API failure" >&2
   exit 1
 fi
+if [[ "\${GH_FAIL}" == "labeler_permission" && "\$*" == *"/collaborators/"* ]]; then
+  login="\$*"
+  login="\${login#*/collaborators/}"
+  login="\${login%%/permission*}"
+  if [[ "\${login}" != "author" && "\${login}" != "maruiz93" ]]; then
+    echo "simulated labeler permission API failure" >&2
+    exit 1
+  fi
+fi
 case "\$*" in
   *"/collaborators/"*"/permission"*)
     login="\$*"
@@ -87,7 +96,14 @@ case "\$*" in
       echo "not a collaborator" >&2
       exit 1
     fi
-    echo "{\"role_name\": \"\${role}\"}"
+    if [[ "\${role}" == custom:* ]]; then
+      custom_name="\${role#custom:}"
+      custom_perm="\${custom_name#*:}"
+      custom_name="\${custom_name%%:*}"
+      echo "{\"role_name\": \"\${custom_name}\", \"permission\": \"\${custom_perm}\"}"
+    else
+      echo "{\"role_name\": \"\${role}\", \"permission\": \"\${role}\"}"
+    fi
     ;;
   *"/issues/"*"/events"*)
     cat "${EVENTS_JSON}"
@@ -160,6 +176,14 @@ run_case "author with triage permission denied (even if MEMBER)" "false" "unauth
 set_role "author" "read"
 write_pr "COLLABORATOR" '[]'
 run_case "author with read permission denied (even if COLLABORATOR)" "false" "unauthorized" "false"
+
+set_role "author" "custom:Developer:write"
+write_pr "MEMBER" '[]'
+run_case "author with write-backed custom role is authorized" "true" "trusted_author" "false"
+
+set_role "author" "custom:TriageHelper:read"
+write_pr "MEMBER" '[]'
+run_case "author with read-backed custom role is denied" "false" "unauthorized" "false"
 
 echo "" >"${ROLES_DIR}/author"
 write_pr "CONTRIBUTOR" '[]'
@@ -301,13 +325,20 @@ unset LABEL_ACTOR_LOGIN PR_UPDATED_AT
 export EVENT_ACTION="labeled"
 
 # A failed labeler lookup is an API error, not a denial.
+export LABEL_ACTOR_LOGIN="labeler"
 write_events '[{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z"}]'
-export GH_FAIL="permission"
+export GH_FAIL="labeler_permission"
 run_case "labeler permission API failure returns error" "false" "error" "false"
 export GH_FAIL="false"
 
-unset CHECK_E2E_AUTH_DRY_RUN
+# An API error while checking the latest labeler during untrusted cleanup returns error
+export LABEL_ACTOR_LOGIN="triager"
+export GH_FAIL="events"
 write_events '[{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z","actor":{"login":"triager"}}]'
+run_case "events API failure during untrusted labeler cleanup returns error" "false" "error" "false"
+export GH_FAIL="false"
+
+unset CHECK_E2E_AUTH_DRY_RUN
 run_case "untrusted labeler removes label" "false" "untrusted_labeler" "true"
 if ! grep -q DELETE "${GH_LOG}"; then
   echo "FAIL: untrusted labeler removes label (expected gh DELETE call)"
@@ -319,6 +350,7 @@ export GH_FAIL="delete"
 run_case "label removal failure returns error" "false" "error" "false"
 export GH_FAIL="false"
 export CHECK_E2E_AUTH_DRY_RUN="true"
+unset LABEL_ACTOR_LOGIN
 
 export EVENT_ACTION="reopened"
 unset PR_UPDATED_AT

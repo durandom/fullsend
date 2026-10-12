@@ -82,10 +82,18 @@ get_collaborator_role() {
     return 1
   fi
   rm -f "${api_err}"
-  role="$(jq -er '.role_name // .permission // empty' <<<"${perm_json}")" || return 1
+  local role perm
+  role="$(jq -r '.role_name // ""' <<<"${perm_json}")"
+  perm="$(jq -r '.permission // ""' <<<"${perm_json}")"
   case "${role}" in
-    admin|maintain|write|triage|read|none) echo "${role}" ;;
-    *) echo "unknown" ;;
+    admin|maintain|write|triage|read) echo "${role}" ;;
+    *)
+      # Custom role: fall back to the canonical permission field
+      case "${perm}" in
+        admin|write|read) echo "${perm}" ;;
+        *) echo "none" ;;
+      esac
+      ;;
   esac
 }
 
@@ -203,7 +211,15 @@ if [[ "${reason}" == "ok_to_test" ]]; then
     if ! is_write_role "${labeler_role}"; then
       authorized=false
       reason="untrusted_labeler"
-      if [[ "${EVENT_ACTION:-}" != "labeled" || -z "${LABEL_ACTOR_LOGIN:-}" || "$(latest_labeler)" == "${LABEL_ACTOR_LOGIN:-}" ]]; then
+      if [[ "${EVENT_ACTION:-}" == "labeled" && -n "${LABEL_ACTOR_LOGIN:-}" ]]; then
+        if ! current_labeler="$(latest_labeler)"; then
+          write_error_output
+          exit 0
+        fi
+        if [[ "${current_labeler}" == "${LABEL_ACTOR_LOGIN}" ]]; then
+          remove_ok_to_test_label
+        fi
+      else
         remove_ok_to_test_label
       fi
     fi
