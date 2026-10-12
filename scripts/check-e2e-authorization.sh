@@ -84,7 +84,7 @@ get_collaborator_role() {
   rm -f "${api_err}"
   local role perm
   role="$(jq -er '.role_name // ""' <<<"${perm_json}")" || return 1
-  perm="$(jq -er '.permission // ""' <<<"${perm_json}")" || return 1
+  perm="$(jq -er '.permission // empty' <<<"${perm_json}")" || return 1
   case "${role}" in
     admin) [[ "${perm}" == "admin" ]] && echo "admin" || echo "none" ;;
     maintain|write) [[ "${perm}" == "write" ]] && echo "${role}" || echo "none" ;;
@@ -93,7 +93,7 @@ get_collaborator_role() {
       # Custom role: fall back to the canonical permission field
       case "${perm}" in
         admin|write|read) echo "${perm}" ;;
-        *) echo "none" ;;
+        *) return 1 ;;
       esac
       ;;
   esac
@@ -201,7 +201,6 @@ if [[ "${reason}" == "ok_to_test" ]]; then
   if [[ -z "${labeler_login}" ]]; then
     authorized=false
     reason="untrusted_labeler"
-    remove_ok_to_test_label
   else
     if ! labeler_role="$(get_collaborator_role "${labeler_login}")"; then
       write_error_output

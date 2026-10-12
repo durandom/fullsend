@@ -206,6 +206,11 @@ set_role "author" "raw:not-a-json-response"
 write_pr "MEMBER" '[]'
 run_case "malformed permission response returns error" "false" "error" "false"
 
+# Permission response missing permission field (e.g. {}) returns error
+set_role "author" "raw:{}"
+write_pr "MEMBER" '[]'
+run_case "permission response missing permission field returns error" "false" "error" "false"
+
 echo "" >"${ROLES_DIR}/author"
 write_pr "CONTRIBUTOR" '[]'
 run_case "contributor author denied" "false" "unauthorized" "false"
@@ -282,9 +287,9 @@ write_pr "NONE" '[{"name":"ok-to-test"}]'
 write_events '[{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z"}]'
 run_case "labeled ok-to-test verifies labeler permission" "true" "ok_to_test" "false"
 
-# Missing LABEL_ACTOR_LOGIN on labeled event fails closed and does not fall back to events
+# Missing LABEL_ACTOR_LOGIN on labeled event fails closed without deleting label
 unset LABEL_ACTOR_LOGIN
-run_case "labeled ok-to-test without sender login is denied" "false" "untrusted_labeler" "true"
+run_case "labeled ok-to-test without sender login is denied" "false" "untrusted_labeler" "false"
 export LABEL_ACTOR_LOGIN="labeler"
 
 # Triage-role users can apply labels but must not authorize a run.
@@ -313,7 +318,7 @@ unset LABEL_ACTOR_LOGIN
 
 export EVENT_ACTION="labeled"
 write_events '[{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z","actor":null}]'
-run_case "ok-to-test label event without actor denied" "false" "untrusted_labeler" "true"
+run_case "ok-to-test label event without actor denied" "false" "untrusted_labeler" "false"
 
 # On labeled events the frozen sender is the labeler: a later re-label by a
 # write user must not authorize the run the triage-role user started.
