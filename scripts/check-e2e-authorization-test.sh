@@ -96,11 +96,22 @@ case "\$*" in
       echo "not a collaborator" >&2
       exit 1
     fi
-    if [[ "\${role}" == custom:* ]]; then
+    if [[ "\${role}" == raw:* ]]; then
+      echo "\${role#raw:}"
+    elif [[ "\${role}" == mismatch:* ]]; then
+      mismatch_data="\${role#mismatch:}"
+      role_part="\${mismatch_data%%:*}"
+      perm_part="\${mismatch_data#*:}"
+      echo "{\"role_name\": \"\${role_part}\", \"permission\": \"\${perm_part}\"}"
+    elif [[ "\${role}" == custom:* ]]; then
       custom_name="\${role#custom:}"
       custom_perm="\${custom_name#*:}"
       custom_name="\${custom_name%%:*}"
       echo "{\"role_name\": \"\${custom_name}\", \"permission\": \"\${custom_perm}\"}"
+    elif [[ "\${role}" == "maintain" ]]; then
+      echo "{\"role_name\": \"maintain\", \"permission\": \"write\"}"
+    elif [[ "\${role}" == "triage" ]]; then
+      echo "{\"role_name\": \"triage\", \"permission\": \"read\"}"
     else
       echo "{\"role_name\": \"\${role}\", \"permission\": \"\${role}\"}"
     fi
@@ -184,6 +195,16 @@ run_case "author with write-backed custom role is authorized" "true" "trusted_au
 set_role "author" "custom:TriageHelper:read"
 write_pr "MEMBER" '[]'
 run_case "author with read-backed custom role is denied" "false" "unauthorized" "false"
+
+# Mismatched role_name and permission fields rejected
+set_role "author" "mismatch:write:read"
+write_pr "MEMBER" '[]'
+run_case "author with mismatched role and permission is denied" "false" "unauthorized" "false"
+
+# Malformed / non-JSON permission API response returns error
+set_role "author" "raw:not-a-json-response"
+write_pr "MEMBER" '[]'
+run_case "malformed permission response returns error" "false" "error" "false"
 
 echo "" >"${ROLES_DIR}/author"
 write_pr "CONTRIBUTOR" '[]'

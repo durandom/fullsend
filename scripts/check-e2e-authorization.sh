@@ -83,10 +83,12 @@ get_collaborator_role() {
   fi
   rm -f "${api_err}"
   local role perm
-  role="$(jq -r '.role_name // ""' <<<"${perm_json}")"
-  perm="$(jq -r '.permission // ""' <<<"${perm_json}")"
+  role="$(jq -er '.role_name // ""' <<<"${perm_json}")" || return 1
+  perm="$(jq -er '.permission // ""' <<<"${perm_json}")" || return 1
   case "${role}" in
-    admin|maintain|write|triage|read) echo "${role}" ;;
+    admin) [[ "${perm}" == "admin" ]] && echo "admin" || echo "none" ;;
+    maintain|write) [[ "${perm}" == "write" ]] && echo "${role}" || echo "none" ;;
+    triage|read) [[ "${perm}" == "read" ]] && echo "${role}" || echo "none" ;;
     *)
       # Custom role: fall back to the canonical permission field
       case "${perm}" in
